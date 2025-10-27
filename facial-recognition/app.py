@@ -5,13 +5,14 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
 import numpy as np, cv2, mediapipe as mp, onnxruntime as ort
 
-DB_PATH = "db.sqlite"
-MODEL_PATH = "models/MobileFaceNet.onnx"
+# ----------------------------- config -----------------------------
+DB_PATH = "/Users/umangsharma/Desktop/med-auth/facial-recognition/db.sqlite"
+MODEL_PATH = "/Users/umangsharma/Desktop/med-auth/facial-recognition/models/MobileFaceNet.onnx"
 THRESHOLD = 0.40
 
 app = FastAPI(title="Local Facial Recognition Service")
 
-# ----------------------------- database setup -----------------------------
+# ----------------------------- database -----------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -23,15 +24,18 @@ def init_db():
             created_at REAL
         )
     """)
-    conn.commit(); conn.close()
-init_db()
+    conn.commit()
+    conn.close()
 
 def save_embedding(user_id: str, embedding: np.ndarray):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("INSERT INTO faces (user_id, embedding, created_at) VALUES (?, ?, ?)",
-                (user_id, json.dumps(embedding.tolist()), time.time()))
-    conn.commit(); conn.close()
+    cur.execute(
+        "INSERT INTO faces (user_id, embedding, created_at) VALUES (?, ?, ?)",
+        (user_id, json.dumps(embedding.tolist()), time.time()),
+    )
+    conn.commit()
+    conn.close()
 
 def load_embeddings():
     conn = sqlite3.connect(DB_PATH)
@@ -41,6 +45,8 @@ def load_embeddings():
     conn.close()
     return [(r[0], np.array(json.loads(r[1]), dtype=np.float32)) for r in rows]
 
+init_db()
+
 # ----------------------------- model + detector -----------------------------
 sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
 input_name, output_name = "input0", "output0"
@@ -48,8 +54,7 @@ mp_fd = mp.solutions.face_detection.FaceDetection(model_selection=1, min_detecti
 
 def bgr_from_bytes(data: bytes):
     arr = np.frombuffer(data, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    return img
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 def detect_face(img_bgr):
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -81,18 +86,27 @@ def embed(face_bgr):
 # ----------------------------- API endpoints -----------------------------
 @app.post("/enroll")
 async def enroll(user_id: str = Form(...), images: List[UploadFile] = File(...)):
+    if not user_id or not images:
+        raise HTTPException(status_code=400, detail="Missing user_id or images")
+
     count = 0
     for img_file in images:
-        data = await img_file.read()
-        bgr = bgr_from_bytes(data)
-        if bgr is None: continue
-        face = detect_face(bgr)
-        if face is None: continue
-        emb = embed(face)
-        save_embedding(user_id, emb)
-        count += 1
+        try:
+            data = await img_file.read()
+            bgr = bgr_from_bytes(data)
+            if bgr is None:
+                continue
+            face = detect_face(bgr)
+            if face is None:
+                continue
+            emb = embed(face)
+            save_embedding(user_id, emb)
+            count += 1
+        except Exception as e:
+            continue
+
     if count == 0:
-        raise HTTPException(status_code=400, detail="no valid faces detected")
+        raise HTTPException(status_code=400, detail="No valid faces detected")
     return {"status": "ok", "saved": count}
 
 @app.post("/capture")
@@ -100,16 +114,16 @@ async def capture(file: UploadFile = File(...)):
     data = await file.read()
     bgr = bgr_from_bytes(data)
     if bgr is None:
-        raise HTTPException(status_code=400, detail="invalid image")
+        raise HTTPException(status_code=400, detail="Invalid image")
 
     face = detect_face(bgr)
     if face is None:
-        return JSONResponse({"decision": "deny", "reason": "no_face"}, status_code=200)
+        return {"decision": "deny", "reason": "no_face"}
 
     emb = embed(face)
     db = load_embeddings()
     if not db:
-        return JSONResponse({"decision": "deny", "reason": "no_enrollments"}, status_code=200)
+        return {"decision": "deny", "reason": "no_enrollments"}
 
     best_score, best_user = -1.0, None
     for user_id, db_emb in db:
@@ -131,7 +145,28 @@ def list_users():
     conn.close()
     return {"users": out}
 
-# ----------------------------- main entry -----------------------------
+@app.delete("/delete/{user_id}")
+def delete_user(user_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM faces WHERE user_id = ?", (user_id,))
+    count = cur.rowcount
+    conn.commit()
+    conn.close()
+    if count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"deleted": count, "user_id": user_id}
+
+@app.delete("/clear")
+def clear_all():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM faces")
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "message": "All records cleared"}
+
+# ----------------------------- main -----------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000)
+    uvicorn.run("app:app", host="127.0.0.1", port=8000)
