@@ -8,7 +8,7 @@ import numpy as np, cv2, mediapipe as mp, onnxruntime as ort
 # ----------------------------- config -----------------------------
 DB_PATH = "/Users/umangsharma/Desktop/med-auth/facial-recognition/db.sqlite"
 MODEL_PATH = "/Users/umangsharma/Desktop/med-auth/facial-recognition/models/MobileFaceNet.onnx"
-THRESHOLD = 0.40
+THRESHOLD = 0.4
 
 app = FastAPI(title="Local Facial Recognition Service")
 
@@ -50,7 +50,7 @@ init_db()
 # ----------------------------- model + detector -----------------------------
 sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
 input_name, output_name = "input0", "output0"
-mp_fd = mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+mp_fd = mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.25)
 
 def bgr_from_bytes(data: bytes):
     arr = np.frombuffer(data, np.uint8)
@@ -112,6 +112,7 @@ async def enroll(user_id: str = Form(...), images: List[UploadFile] = File(...))
 @app.post("/capture")
 async def capture(file: UploadFile = File(...)):
     data = await file.read()
+    open("/tmp/esp_last.jpg", "wb").write(data)
     bgr = bgr_from_bytes(data)
     if bgr is None:
         raise HTTPException(status_code=400, detail="Invalid image")
@@ -169,4 +170,4 @@ def clear_all():
 # ----------------------------- main -----------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=8000)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000)
