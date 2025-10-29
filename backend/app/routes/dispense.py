@@ -1,41 +1,44 @@
-from fastapi import APIRouter, HTTPException
+# backend/app/routes/dispense.py
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-from typing import Dict
-import time
+from app.services import dispenser
+from app.serial_bridge import write_to_serial
 
 router = APIRouter()
 
-# simple in-memory store. Replace with DB for production.
-_dispense_store: Dict[str, dict] = {}
-
-class DispenseRequest(BaseModel):
-    patient_id: str
-    amount: int
-
-class DispenseStatus(BaseModel):
-    patient_id: str
-    status: str
-    timestamp: float
+class StartPayload(BaseModel):
+    meta: dict = {}
 
 @router.post("/start-dispense")
-async def start_dispense(req: DispenseRequest):
-    # create a job id from timestamp
-    job_id = f"job-{int(time.time()*1000)}"
-    _dispense_store[job_id] = {"patient_id": req.patient_id, "amount": req.amount, "status": "pending", "ts": time.time()}
-    return {"job_id": job_id}
+def start_dispense(background_tasks: BackgroundTasks, payload: StartPayload | None = None):
+    """
+    Called by serial_bridge when Arduino RTC triggers.
+    Starts a dispense job and runs facial verification attempts in background.
+    """
+    job_id = dispenser.new_job(metadata=(payload.meta if payload else {}))
+    background_tasks.add_task(dispenser.run_dispense_workflow, job_id)
+    return {"job_id": job_id, "status": "started"}
 
 @router.get("/dispense-status/{job_id}")
-async def dispense_status(job_id: str):
-    job = _dispense_store.get(job_id)
+def dispense_status(job_id: str):
+    job = dispenser.get_job(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
-    return {"job_id": job_id, "status": job["status"], "patient_id": job["patient_id"]}
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "attempts": job.get("attempts", 0),
+        "result": job.get("result"),
+    }
 
-# For testing: mark job complete
 @router.post("/dispense-complete/{job_id}")
-async def dispense_complete(job_id: str):
-    job = _dispense_store.get(job_id)
+def dispense_complete(job_id: str):
+    """
+    Optional: called by Arduino or serial_bridge when dispensing physically completes.
+    Marks job as acknowledged.
+    """
+    job = dispenser.get_job(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
-    job["status"] = "completed"
-    return {"job_id": job_id, "status": "completed"}
+        raise HTTPException(status_code=404, detail="Job not found")
+    job["status"] = "acknowledged"
+    return {"job_id": job_id, "status": "acknowledged"}

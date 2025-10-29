@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes.capture import router as capture_router
 from app.routes.dispense import router as dispense_router
+from app.routes.schedules import router as schedules_router
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -19,9 +20,8 @@ app.add_middleware(
 
 app.include_router(capture_router)
 app.include_router(dispense_router)
-
+app.include_router(schedules_router)
+app.include_router(dispense_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-# Run with: uvicorn app.main:app --reload --port 8000
